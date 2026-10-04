@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PS5 Streaming Setup</title>
+<!-- Telegram Mini App SDK: must be loaded before other scripts -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Telegram injects --tg-theme-* variables; the fallbacks are used in a normal browser */
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --text: var(--tg-theme-text-color, #1a1a1a);
+    --hint: var(--tg-theme-hint-color, #8a8a8e);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --border: color-mix(in srgb, var(--text) 18%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.tg) {
+      --bg: #17212b; --bg2: #232e3c; --text: #f5f5f5; --hint: #708499;
+      --accent: #5288c1; --accent-text: #ffffff;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden; -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    display: flex; flex-direction: column;
+    height: var(--tg-viewport-stable-height, 100vh);
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom)) 12px;
+    gap: 10px;
+  }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .label { font-size: 12px; color: var(--hint); margin-right: 2px; }
+  .grow { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; color: var(--text);
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 7px 11px; cursor: pointer;
+  }
+  button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  #wrap {
+    position: relative; flex: 1; min-height: 260px;
+    border-radius: 14px; overflow: hidden; background: var(--bg2);
+    cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--hint); }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .tag {
+    position: absolute; display: none; transform: translate(-50%, -50%);
+    font-size: 11px; padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  }
+  details { font-size: 12px; color: var(--hint); }
+  summary { cursor: pointer; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+  .sw { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <span class="label">Monitor input</span>
+    <button id="inPs5">HDMI 1 · PS5</button>
+    <button id="inPc">DisplayPort · PC</button>
+  </div>
+
+  <div id="wrap">
+    <div id="msg">Loading 3D scene…</div>
+    <div id="labels"></div>
+  </div>
+
+  <details>
+    <summary>Cable legend</summary>
+    <div class="legend">
+      <span><span class="sw" style="background:#7F77DD"></span>HDMI PS5 → card</span>
+      <span><span class="sw" style="background:#1D9E75"></span>HDMI passthrough</span>
+      <span><span class="sw" style="background:#D85A30"></span>USB card → PC</span>
+      <span><span class="sw" style="background:#378ADD"></span>DisplayPort PC → monitor</span>
+      <span><span class="sw" style="background:#EF9F27"></span>Ethernet</span>
+      <span><span class="sw" style="background:#5F5E5A"></span>Power</span>
+      <span><span class="sw" style="background:#B4B2A9"></span>Internet upload</span>
+    </div>
+  </details>
+
+  <div class="row">
+    <span class="label">Drag to rotate · pinch to zoom</span>
+    <span class="grow"></span>
+    <button id="xray">See-through desk</button>
+    <button id="spin">Pause</button>
+    <button id="reset">Reset</button>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---------- Telegram Mini App setup ----------
+const tg = window.Telegram && window.Telegram.WebApp;
+const inTelegram = !!(tg && tg.initData !== undefined && tg.platform && tg.platform !== 'unknown');
+if (inTelegram) {
+  document.documentElement.classList.add('tg');
+  tg.ready();                                   // hide Telegram's loading placeholder
+  tg.expand();                                  // open at full height
+  if (tg.isVersionAtLeast('7.7')) tg.disableVerticalSwipes(); // so dragging the scene doesn't close the app
+  if (tg.isVersionAtLeast('6.1')) {
+    tg.setHeaderColor('bg_color');
+    tg.setBackgroundColor('bg_color');
+  }
+}
+const haptic = () => { try { if (inTelegram && tg.isVersionAtLeast('6.1')) tg.HapticFeedback.selectionChanged(); } catch (_) {} };
+
+(function () {
+const wrap = document.getElementById('wrap');
+const labelsEl = document.getElementById('labels');
+const msg = document.getElementById('msg');
+if (typeof THREE === 'undefined') { msg.textContent = 'Couldn’t load the 3D library. Check your connection and reopen.'; return; }
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); }
+catch (e) { msg.textContent = 'WebGL is unavailable on this device, so the 3D scene can’t render.'; return; }
+msg.style.display = 'none';
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.domElement.style.cssText = 'position:absolute;inset:0;display:block;width:100%;height:100%;';
+wrap.insertBefore(renderer.domElement, labelsEl);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+sun.position.set(4, 8, 6);
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.3);
+fill.position.set(-6, 3, -4);
+scene.add(fill);
+
+const mat = (c, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.6, metalness: 0.1 }, o));
+function box(w, h, d, m, x, y, z) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  b.position.set(x, y, z);
+  scene.add(b);
+  return b;
+}
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 9), mat(0x55504a));
+floor.rotation.x = -Math.PI / 2; floor.position.set(0, -2.6, 0); scene.add(floor);
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(14, 7), mat(0x6b6660));
+wall.position.set(0, 0.9, -2.5); scene.add(wall);
+box(0.35, 0.5, 0.06, mat(0xf1efe8), -2.2, -2.0, -2.47);
+
+const deskMat = mat(0x9a7652, { transparent: true, opacity: 1 });
+box(9.4, 0.2, 3.2, deskMat, 0, -0.1, -0.1);
+const legMat = mat(0x6e5238, { transparent: true, opacity: 1 });
+[[-4.4, 1.2], [4.4, 1.2], [-4.4, -1.4], [4.4, -1.4]].forEach(([x, z]) => box(0.15, 2.4, 0.15, legMat, x, -1.4, z));
+
+box(0.22, 2.0, 1.5, mat(0xf4f4f2), -3.55, 1.0, 0.2);
+box(0.18, 1.85, 1.45, mat(0x1c1c1e), -3.35, 1.0, 0.2);
+box(0.22, 2.0, 1.5, mat(0xf4f4f2), -3.15, 1.0, 0.2);
+box(0.04, 0.05, 0.05, mat(0x378ADD, { emissive: 0x378ADD, emissiveIntensity: 1 }), -3.03, 1.85, 0.9);
+
+box(0.75, 0.14, 0.45, mat(0x3a3a38, { metalness: 0.4 }), -1.6, 0.07, 0.4);
+box(0.06, 0.03, 0.03, mat(0x5DCAA5, { emissive: 0x5DCAA5, emissiveIntensity: 1 }), -1.4, 0.15, 0.63);
+
+box(0.8, 1.8, 1.6, mat(0x34353a, { metalness: 0.3 }), 3.4, 0.9, 0.1);
+box(0.02, 1.4, 1.2, mat(0x7F77DD, { emissive: 0x534AB7, emissiveIntensity: 0.6 }), 2.99, 0.95, 0.1);
+
+box(0.9, 0.12, 0.5, mat(0x2c2c2a), 2.2, 0.06, -1.25);
+[-0.3, 0.3].forEach(dx => box(0.04, 0.5, 0.04, mat(0x2c2c2a), 2.2 + dx, 0.35, -1.45));
+box(0.05, 0.03, 0.02, mat(0x97C459, { emissive: 0x97C459, emissiveIntensity: 1 }), 2.0, 0.08, -0.99);
+
+box(0.5, 0.15, 1.3, mat(0xdddcd6), 0, 0.08, 0.7);
+box(1.9, 0.14, 0.4, mat(0x2a2a2a), 0, -2.53, -1.3);
+for (let i = 0; i < 5; i++) box(0.12, 0.02, 0.12, mat(0xf1efe8), -0.7 + i * 0.35, -2.45, -1.3);
+
+function texFrom(drawFn) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 288;
+  drawFn(c.getContext('2d'));
+  return new THREE.CanvasTexture(c);
+}
+function drawGame(g, w, h) {
+  g.fillStyle = '#f2a65a'; g.fillRect(0, 0, w, h * 0.55);
+  g.fillStyle = '#e8735a'; g.fillRect(0, h * 0.4, w, h * 0.15);
+  g.fillStyle = '#ffd27a'; g.beginPath(); g.arc(w * 0.7, h * 0.42, h * 0.1, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#2f6f8f'; g.fillRect(0, h * 0.55, w, h * 0.45);
+  g.fillStyle = '#444'; g.beginPath(); g.moveTo(w * 0.45, h * 0.55); g.lineTo(w * 0.55, h * 0.55); g.lineTo(w * 0.9, h); g.lineTo(w * 0.1, h); g.fill();
+  g.strokeStyle = '#ffd27a'; g.lineWidth = Math.max(2, w / 120); g.setLineDash([w / 30, w / 30]);
+  g.beginPath(); g.moveTo(w * 0.5, h * 0.56); g.lineTo(w * 0.5, h); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#1b3b2a';
+  for (let i = 0; i < 4; i++) {
+    const x = w * (0.08 + i * 0.07);
+    g.fillRect(x, h * 0.3, w * 0.01, h * 0.25);
+    g.beginPath(); g.arc(x + w * 0.005, h * 0.3, h * 0.06, 0, Math.PI * 2); g.fill();
+  }
+}
+const gameTex = texFrom(g => {
+  drawGame(g, 512, 288);
+  g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(8, 8, 150, 24);
+  g.fillStyle = '#fff'; g.font = '14px sans-serif'; g.fillText('HDMI 1 · PS5', 18, 25);
+});
+const obsTex = texFrom(g => {
+  g.fillStyle = '#1e1f24'; g.fillRect(0, 0, 512, 288);
+  g.fillStyle = '#2a2c33'; g.fillRect(0, 0, 512, 18);
+  g.save(); g.translate(40, 26); drawGame(g, 432, 172); g.restore();
+  g.strokeStyle = '#555'; g.strokeRect(40, 26, 432, 172);
+  for (let i = 0; i < 4; i++) { g.fillStyle = '#2a2c33'; g.fillRect(8 + i * 126, 208, 118, 72); }
+  g.fillStyle = '#5DCAA5'; g.fillRect(140, 225, 70, 8); g.fillRect(140, 245, 90, 8);
+  g.fillStyle = '#E24B4A'; g.fillRect(392, 222, 110, 22);
+  g.fillStyle = '#fff'; g.font = 'bold 14px sans-serif'; g.fillText('LIVE', 428, 238);
+  g.font = '12px sans-serif'; g.fillText('DisplayPort · PC', 12, 13);
+});
+
+box(2.7, 1.55, 0.08, mat(0x1a1a1a), 0, 1.4, -1.15);
+box(1.0, 0.6, 0.12, mat(0x222222), 0, 1.3, -1.25);
+const screenMat = new THREE.MeshBasicMaterial({ map: gameTex });
+const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.46), screenMat);
+screen.position.set(0, 1.4, -1.105); scene.add(screen);
+box(0.12, 0.7, 0.12, mat(0x2a2a2a), 0, 0.35, -1.25);
+box(0.9, 0.04, 0.5, mat(0x2a2a2a), 0, 0.02, -1.15);
+
+function platform(color, x) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.55, 0.15), mat(color, { emissive: color, emissiveIntensity: 0.35 }));
+  m.position.set(x, 3.6, -1.4);
+  scene.add(m);
+  return m;
+}
+const twitch = platform(0x9146FF, 1.3);
+const kick = platform(0x53FC18, 3.3);
+
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const flows = [];
+const cables = {};
+function cable(key, pts, color, radius, pulses) {
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const m = mat(color, { roughness: 0.45, emissive: color, emissiveIntensity: 0 });
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 100, radius, 8), m));
+  cables[key] = m;
+  for (let i = 0; i < pulses; i++) {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.9, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    scene.add(p);
+    flows.push({ curve, mesh: p, t: i / pulses });
+  }
+}
+const sig = 0.045, pw = 0.035;
+cable('hdmiIn', [V(-3.35, 0.3, -0.58), V(-2.8, 0.05, -0.2), V(-2.2, 0.05, 0.35), V(-1.98, 0.07, 0.4)], 0x7F77DD, sig, 3);
+cable('pass', [V(-1.6, 0.07, 0.17), V(-1.3, 0.05, -0.5), V(-0.7, 0.5, -1.4), V(-0.4, 1.05, -1.32)], 0x1D9E75, sig, 3);
+cable('usb', [V(-1.22, 0.07, 0.4), V(-0.3, 0.05, 1.2), V(1.8, 0.05, 1.1), V(2.75, 0.2, 0.6), V(2.99, 0.35, 0.4)], 0xD85A30, sig, 3);
+cable('dp', [V(3.4, 1.3, -0.72), V(2.6, 1.3, -1.3), V(1.3, 1.1, -1.55), V(0.4, 1.05, -1.32)], 0x378ADD, sig, 3);
+cable('eth', [V(3.5, 0.45, -0.72), V(3.2, 0.05, -1.1), V(2.7, 0.06, -1.3), V(2.65, 0.08, -1.3)], 0xEF9F27, 0.035, 2);
+cable('up1', [V(2.2, 0.62, -1.45), V(2.0, 2.0, -1.5), V(1.5, 3.1, -1.45), V(1.3, 3.3, -1.4)], 0xB4B2A9, 0.025, 2);
+cable('up2', [V(2.2, 0.62, -1.45), V(2.6, 2.0, -1.5), V(3.1, 3.1, -1.45), V(3.3, 3.3, -1.4)], 0xB4B2A9, 0.025, 2);
+const P = 0x5F5E5A;
+cable('pwPs5', [V(-3.35, 0.7, -0.58), V(-3.3, 0.0, -1.75), V(-2.6, -2.2, -1.85), V(-1.2, -2.55, -1.45), V(-0.7, -2.45, -1.3)], P, pw, 0);
+cable('pwMon', [V(0.25, 1.2, -1.32), V(0.2, 0.0, -1.75), V(0.0, -2.0, -1.6), V(-0.35, -2.45, -1.3)], P, pw, 0);
+cable('pwPc', [V(3.2, 1.6, -0.72), V(3.0, 0.0, -1.8), V(1.8, -2.4, -1.7), V(0.7, -2.45, -1.3)], P, pw, 0);
+cable('pwRouter', [V(2.5, 0.06, -1.5), V(2.3, 0.0, -1.8), V(1.0, -2.3, -1.6), V(0.35, -2.45, -1.3)], P, pw, 0);
+cable('pwCard', [V(-1.6, 0.07, 0.17), V(-1.9, 0.0, -1.75), V(-1.0, -2.3, -1.6), V(0.0, -2.45, -1.3)], P, 0.025, 0);
+cable('pwWall', [V(-0.95, -2.53, -1.3), V(-1.5, -2.58, -1.6), V(-2.2, -2.5, -2.2), V(-2.2, -2.05, -2.45)], P, pw, 0);
+
+const labels = [
+  ['PS5', V(-3.35, 2.3, 0.2)],
+  ['Capture card', V(-1.6, 0.55, 0.4)],
+  ['Monitor', V(0, 2.45, -1.15)],
+  ['PC with OBS', V(3.4, 2.1, 0.5)],
+  ['Router', V(2.2, 0.9, -1.0)],
+  ['Power strip', V(0, -2.15, -1.0)],
+  ['Wall outlet', V(-2.2, -1.55, -2.4)],
+  ['Twitch', V(1.3, 4.1, -1.4)],
+  ['Kick', V(3.3, 4.1, -1.4)]
+].map(([text, pos]) => {
+  const d = document.createElement('div');
+  d.className = 'tag';
+  d.textContent = text;
+  labelsEl.appendChild(d);
+  return { d, pos };
+});
+
+const btnPs5 = document.getElementById('inPs5');
+const btnPc = document.getElementById('inPc');
+function setInput(which) {
+  screenMat.map = which === 'ps5' ? gameTex : obsTex;
+  screenMat.needsUpdate = true;
+  cables.pass.emissiveIntensity = which === 'ps5' ? 0.6 : 0;
+  cables.dp.emissiveIntensity = which === 'pc' ? 0.6 : 0;
+  btnPs5.classList.toggle('on', which === 'ps5');
+  btnPc.classList.toggle('on', which === 'pc');
+}
+btnPs5.onclick = () => { haptic(); setInput('ps5'); };
+btnPc.onclick = () => { haptic(); setInput('pc'); };
+setInput('ps5');
+
+let xray = false;
+const xrayBtn = document.getElementById('xray');
+xrayBtn.onclick = () => {
+  haptic();
+  xray = !xray;
+  deskMat.opacity = xray ? 0.3 : 1;
+  legMat.opacity = xray ? 0.3 : 1;
+  deskMat.depthWrite = !xray;
+  legMat.depthWrite = !xray;
+  xrayBtn.textContent = xray ? 'Solid desk' : 'See-through desk';
+  xrayBtn.classList.toggle('on', xray);
+};
+
+// ---------- Camera controls: one finger rotates, two fingers pinch-zoom ----------
+const target = V(0.2, 0.5, -0.4);
+const home = { theta: 0.3, phi: 1.2 };
+let theta = home.theta, phi = home.phi, baseR = 15, zoom = 1, auto = true;
+const pointers = new Map();
+let pinchStart = 0, zoomStart = 1;
+const pinchDist = () => { const [a, b] = [...pointers.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+wrap.addEventListener('pointerdown', e => {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+  wrap.style.cursor = 'grabbing';
+  if (pointers.size === 2) { pinchStart = pinchDist(); zoomStart = zoom; }
+});
+wrap.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  if (pointers.size === 1) {
+    theta = Math.min(1.3, Math.max(-1.3, theta - (e.clientX - p.x) * 0.008));
+    phi = Math.min(1.5, Math.max(0.4, phi - (e.clientY - p.y) * 0.008));
+  }
+  p.x = e.clientX; p.y = e.clientY;
+  if (pointers.size === 2 && pinchStart > 0) zoom = Math.min(1.6, Math.max(0.55, zoomStart * pinchStart / pinchDist()));
+});
+const endDrag = e => { pointers.delete(e.pointerId); if (!pointers.size) wrap.style.cursor = 'grab'; };
+wrap.addEventListener('pointerup', endDrag);
+wrap.addEventListener('pointercancel', endDrag);
+wrap.addEventListener('wheel', e => { e.preventDefault(); zoom = Math.min(1.6, Math.max(0.55, zoom * (1 + e.deltaY * 0.001))); }, { passive: false });
+
+const spinBtn = document.getElementById('spin');
+spinBtn.onclick = () => { haptic(); auto = !auto; spinBtn.textContent = auto ? 'Pause' : 'Auto-rotate'; };
+document.getElementById('reset').onclick = () => { haptic(); theta = home.theta; phi = home.phi; zoom = 1; };
+
+// ---------- Sizing: the canvas fills whatever space Telegram gives us ----------
+let curW = 0, curH = 0;
+function syncSize() {
+  const rect = wrap.getBoundingClientRect();
+  const w = Math.round(rect.width), h = Math.round(rect.height);
+  if (w > 0 && h > 0 && (w !== curW || h !== curH)) {
+    curW = w; curH = h;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    // Original framing was r=15 at ~1.48 aspect; back off on tall/narrow phone screens
+    baseR = Math.min(26, 15 * Math.max(1, Math.sqrt(1.48 / camera.aspect)));
+    camera.updateProjectionMatrix();
+  }
+  return curW > 0;
+}
+if (window.ResizeObserver) new ResizeObserver(syncSize).observe(wrap);
+if (inTelegram) tg.onEvent('viewportChanged', syncSize);
+
+let last = performance.now(), sway = 0;
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (!syncSize()) return;
+  const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+  last = now;
+  if (auto && !pointers.size) { sway += dt * 0.3; theta = home.theta + Math.sin(sway) * 0.6; }
+  const r = baseR * zoom;
+  camera.position.set(
+    target.x + r * Math.sin(phi) * Math.sin(theta),
+    target.y + r * Math.cos(phi),
+    target.z + r * Math.sin(phi) * Math.cos(theta)
+  );
+  camera.lookAt(target);
+  flows.forEach(f => { f.t = (f.t + dt * 0.35) % 1; f.mesh.position.copy(f.curve.getPointAt(f.t)); });
+  twitch.rotation.y = Math.sin(now / 900) * 0.25;
+  kick.rotation.y = Math.sin(now / 900 + 1) * 0.25;
+  renderer.render(scene, camera);
+  labels.forEach(l => {
+    const p = l.pos.clone().project(camera);
+    if (p.z > 1 || !isFinite(p.x)) { l.d.style.display = 'none'; return; }
+    l.d.style.display = 'block';
+    l.d.style.left = ((p.x + 1) / 2 * curW) + 'px';
+    l.d.style.top = ((1 - p.y) / 2 * curH) + 'px';
+  });
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
